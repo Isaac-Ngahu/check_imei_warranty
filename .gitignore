@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.log
+*.sqlite
+*.db
+.git/
+node_modules/
+dist/
+build/
+.env
+batches/

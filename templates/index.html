@@ -1,0 +1,152 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Warranty Checker</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="/static/app.js" defer></script>
+</head>
+<body>
+    <main class="container">
+        <header class="header">
+            <div>
+                <p class="eyebrow">ONFON · DEVICE SERVICES</p>
+                <h1>Warranty Checker</h1>
+                <p class="subtitle">
+                    Upload IMEIs, track warranty checks, and download active devices.
+                </p>
+            </div>
+            <div class="status-pill">
+                <span class="status-dot"></span>
+                Local dashboard
+            </div>
+        </header>
+
+        <section class="panel">
+            <div class="section-heading">
+                <div>
+                    <h2>Upload IMEIs</h2>
+                    <p>Select a TXT, CSV, or Excel file containing IMEIs.</p>
+                </div>
+            </div>
+
+            <label class="drop-zone" id="dropZone" for="imeiFile">
+                <span class="upload-icon">↑</span>
+                <strong>Choose a file or drag it here</strong>
+                <span>TXT, CSV, XLSX, XLS</span>
+                <input
+                    type="file"
+                    id="imeiFile"
+                    accept=".txt,.csv,.xlsx,.xls"
+                >
+            </label>
+
+            <div id="fileInfo" class="file-info hidden"></div>
+
+            <div class="preview-header">
+                <h3>IMEI preview</h3>
+                <span id="imeiCount" class="count">0 IMEIs</span>
+            </div>
+
+            <textarea
+                id="imeiInput"
+                rows="7"
+                spellcheck="false"
+                placeholder="Your IMEIs will appear here, one per line. You can also paste IMEIs directly."
+            ></textarea>
+
+            <p class="hint">
+                Duplicate entries are removed. IMEIs are submitted as strings
+                to preserve leading zeroes.
+            </p>
+
+            <div class="actions">
+                <button id="submitBtn" class="button primary" disabled>
+                    Start warranty check
+                </button>
+                <button id="clearBtn" class="button secondary">
+                    Clear
+                </button>
+            </div>
+
+            <p id="uploadMessage" class="message" role="status"></p>
+        </section>
+
+        <section class="panel">
+            <div class="section-heading">
+                <div>
+                    <h2>Processing job</h2>
+                    <p>Monitor the job associated with your saved job ID.</p>
+                </div>
+                <button id="refreshBtn" class="button secondary small">
+                    Refresh status
+                </button>
+            </div>
+
+            <div class="job-id-row">
+                <span>Current job ID</span>
+                <button id="copyJobBtn" class="text-button" disabled>
+                    Copy ID
+                </button>
+            </div>
+            <div id="jobId" class="job-id">No job selected</div>
+
+            <div class="progress-header">
+                <span id="jobStatus">No active job</span>
+                <strong id="progressText">0%</strong>
+            </div>
+
+            <div
+                class="progress-track"
+                role="progressbar"
+                aria-label="Job progress"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="0"
+                id="progressBar"
+            >
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <span>Total IMEIs</span>
+                    <strong id="totalCount">0</strong>
+                </div>
+                <div class="stat-card">
+                    <span>Processed</span>
+                    <strong id="completedCount">0</strong>
+                </div>
+                <div class="stat-card">
+                    <span>Under warranty</span>
+                    <strong id="activeCount">0</strong>
+                </div>
+                <div class="stat-card">
+                    <span>Errors / unknown</span>
+                    <strong id="errorCount">0</strong>
+                </div>
+            </div>
+
+            <p id="jobMessage" class="message" role="status"></p>
+
+            <div class="actions">
+                <button id="downloadBtn" class="button primary" disabled>
+                    Download active IMEIs CSV
+                </button>
+            </div>
+
+            <p class="hint">
+                The download uses the current job ID, not the latest job
+                submitted by another user.
+            </p>
+        </section>
+
+        <footer>
+            Warranty Checker · Flask API · Port 5006
+        </footer>
+    </main>
+</body>
+</html>
