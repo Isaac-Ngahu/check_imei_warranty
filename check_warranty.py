@@ -9,6 +9,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+
 
 from openpyxl import Workbook
 from flask import Flask, jsonify, request, send_file,render_template
@@ -36,7 +39,7 @@ MIN_RESULT_WAIT = 3
 MAX_RETRIES = 3
 
 # Set to True if you want Chrome to run in the background.
-HEADLESS = False
+HEADLESS = True
 
 import math
 import threading
@@ -652,8 +655,8 @@ def record_result(imei, status, processed_at, job_id=None):
 def create_browser():
     options = webdriver.ChromeOptions()
 
-    if HEADLESS:
-        options.add_argument("--headless=new")
+
+    options.add_argument("--headless=new")
 
     options.add_argument("--start-maximized")
     options.add_argument("--disable-dev-shm-usage")
@@ -666,7 +669,12 @@ def create_browser():
         {"performance": "ALL"}
     )
 
-    return webdriver.Chrome(options=options)
+    driver = webdriver.Chrome(
+    service=Service(ChromeDriverManager().install()),
+    options=options
+    )
+
+    return driver
 
 
 # ---------------- WARRANTY CHECK ----------------
