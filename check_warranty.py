@@ -53,7 +53,7 @@ from flask import Flask, jsonify, request,json
 app = Flask(__name__)
 
 MAX_RETRIES = 3
-MAX_WORKERS = 5
+MAX_WORKERS = 3
 
 # Only allow one submitted batch to run at a time.
 job_semaphore = threading.Semaphore(1)
@@ -669,10 +669,7 @@ def create_browser():
         {"performance": "ALL"}
     )
 
-    driver = webdriver.Chrome(
-    service=Service(ChromeDriverManager().install()),
-    options=options
-    )
+    driver = webdriver.Chrome(options=options)
 
     return driver
 
