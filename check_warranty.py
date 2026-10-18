@@ -27,7 +27,7 @@ RESULT_URL = (
     "https://www.carlcare.com/sa_en/warranty-check/warranty/show/"
 )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = Path(__file__).resolve().parent
 IMEI_FILE = BASE_DIR / "imeis.txt"
 
 
@@ -833,7 +833,7 @@ def get_warranty_job(job_id):
     FROM jobs
     WHERE id = ?
     """, (job_id,)).fetchone()
-    
+
     conn.close()
     if job is None:
         return jsonify({
