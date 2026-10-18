@@ -54,6 +54,7 @@ from flask import Flask, jsonify, request,json
 
 app = Flask(__name__)
 
+
 MAX_RETRIES = 3
 MAX_WORKERS = 11
 
@@ -76,10 +77,12 @@ latest_job_id = None
 #------------------------------db configs---------------------------#
 import sqlite3
 DB_FILE = os.path.join(BASE_DIR, "jobs.db")
+
 def get_db():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
+
 def init_db():
     conn = get_db()
     conn.execute("""
@@ -1730,11 +1733,14 @@ def main():
 # if __name__ == "__main__":
 #     main()
 
+create_csv_if_missing()
+init_db()
+recover_interrupted_jobs()
 
 if __name__ == "__main__":
-    create_csv_if_missing()
-    init_db()
-    recover_interrupted_jobs()
+    # create_csv_if_missing()
+    # init_db()
+    # recover_interrupted_jobs()
     app.run(
         host="0.0.0.0",
         port=5006,
