@@ -36,7 +36,7 @@ RESULTS_CSV = BASE_DIR / "search_results.csv"
 
 KENYA_TZ = ZoneInfo("Africa/Nairobi")
 
-WAIT_TIMEOUT = 15
+WAIT_TIMEOUT = 5
 MIN_RESULT_WAIT = 3
 MAX_RETRIES = 3
 
@@ -56,7 +56,7 @@ app = Flask(__name__)
 
 
 MAX_RETRIES = 3
-MAX_WORKERS = 11
+MAX_WORKERS = 5
 
 # Only allow one submitted batch to run at a time.
 job_semaphore = threading.Semaphore(1)
@@ -68,6 +68,7 @@ jobs = {}
 jobs_lock = threading.Lock()
 csv_lock = threading.Lock()
 job_stop_events = {}
+job_drivers = {}
 BATCHES_DIR = BASE_DIR / "batches"
 BATCHES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -127,6 +128,7 @@ def update_job_status(job_id, status):
         "completed",
         "completed_with_errors",
         "stopped",
+        "stopping"
     ):
         conn.execute("""
             UPDATE jobs
@@ -385,6 +387,10 @@ def process_chunk(job_id, imeis):
                             f"for IMEI {imei}"
                         )
                         driver = create_browser()
+                    
+                    with jobs_lock:
+                        job_drivers.setdefault(job_id, []).append(driver)
+
 
                     status = check_imei(driver, imei)
                     break
@@ -720,6 +726,17 @@ def stop_warranty_job(job_id):
 
         stop_event.set()
 
+        for driver in job_drivers.get(job_id, []):
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+        job_drivers.pop(job_id, None)
+
+        update_job_status(job_id, "stopped")
+
+        
         return jsonify({
             "message": (
                 "Stop requested. Workers will finish their current "
@@ -1263,6 +1280,8 @@ def check_imei(driver, imei):
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
+            
+
             print(
                 f"[ATTEMPT {attempt}/{MAX_RETRIES}] "
                 f"Checking IMEI {imei}"
@@ -1304,6 +1323,9 @@ def check_imei(driver, imei):
 
             print(f"[RESULT] IMEI {imei}: {status}")
             return status
+        
+        except InterruptedError:
+            return "Stopped"
 
         except TimeoutException:
     # A timeout can mean a slow page or a dead browser.
@@ -1669,9 +1691,7 @@ def get_active_imeis():
 # ---------------- MAIN ----------------
 
 def main():
-    if not IMEI_FILE.exists():
-        print(f"IMEI input file not found: {IMEI_FILE}")
-        return
+    
 
     # Read IMEIs as strings to preserve leading zeroes.
     imeis = [
@@ -1712,7 +1732,7 @@ def main():
                 print(f"[ACTIVE] {imei} added to active_imeis.")
 
             # The next iteration navigates back to SEARCH_URL.
-            time.sleep(0.5)
+            time.sleep(1)
 
     except KeyboardInterrupt:
         print("\nStopped by user. Saved results are retained.")
