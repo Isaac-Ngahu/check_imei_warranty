@@ -85,7 +85,20 @@
                     Refresh status
                 </button>
             </div>
-
+            <div class="job-actions">
+                <button
+                    id="stopBtn"
+                    class="button danger"
+                    type="button"
+                    disabled
+                >
+                    <span class="stop-icon" aria-hidden="true"></span>
+                    Stop job
+                </button>
+                <span id="stopHint" class="stop-hint">
+                    Stop processing after the current IMEIs finish.
+                </span>
+            </div>
             <div class="job-id-row">
                 <span>Current job ID</span>
                 <button id="copyJobBtn" class="text-button" disabled>

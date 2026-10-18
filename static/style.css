@@ -376,3 +376,62 @@ footer {
         flex-direction: column;
     }
 }
+
+
+/* Job controls */
+.job-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 0 0 22px;
+}
+
+.button.danger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    color: #b42318;
+    background: #fff;
+    border-color: #f0b8b4;
+}
+
+.button.danger:hover:not(:disabled) {
+    background: #fef3f2;
+    border-color: #d92d20;
+}
+
+.button.danger:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.stop-icon {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    background: currentColor;
+    flex-shrink: 0;
+}
+
+.button.danger.is-stopping {
+    color: #7a271a;
+    background: #fef3f2;
+    border-color: #f0b8b4;
+    cursor: wait;
+}
+
+.stop-hint {
+    color: #7a8496;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+    .job-actions {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+}

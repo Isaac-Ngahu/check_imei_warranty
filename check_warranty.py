@@ -53,7 +53,7 @@ from flask import Flask, jsonify, request,json
 app = Flask(__name__)
 
 MAX_RETRIES = 3
-MAX_WORKERS = 3
+MAX_WORKERS = 11
 
 # Only allow one submitted batch to run at a time.
 job_semaphore = threading.Semaphore(1)
@@ -64,12 +64,122 @@ executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 jobs = {}
 jobs_lock = threading.Lock()
 csv_lock = threading.Lock()
-
+job_stop_events = {}
 BATCHES_DIR = BASE_DIR / "batches"
 BATCHES_DIR.mkdir(parents=True, exist_ok=True)
 
 latest_job_id = None
 
+
+#------------------------------db configs---------------------------#
+import sqlite3
+DB_FILE = BASE_DIR / "jobs.db"
+def get_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+def init_db():
+    conn = get_db()
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    total INTEGER NOT NULL,
+    completed INTEGER DEFAULT 0,
+    under_warranty INTEGER DEFAULT 0,
+    errors INTEGER DEFAULT 0,
+    worker_failures INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+def create_job_record(job_id, total):
+    conn = get_db()
+
+    conn.execute("""
+        INSERT INTO jobs (
+            id,
+            status,
+            total
+        )
+        VALUES (?, ?, ?)
+    """, (
+        job_id,
+        "queued",
+        total
+    ))
+
+    conn.commit()
+    conn.close()
+
+def update_job_status(job_id, status):
+    conn = get_db()
+
+    if status in (
+        "completed",
+        "completed_with_errors",
+        "stopped",
+    ):
+        conn.execute("""
+            UPDATE jobs
+            SET status = ?,
+                completed_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (status, job_id))
+    else:
+        conn.execute("""
+            UPDATE jobs
+            SET status = ?
+            WHERE id = ?
+        """, (status, job_id))
+
+    conn.commit()
+    conn.close()
+
+
+
+
+def update_job_progress(
+    job_id,
+    completed,
+    under_warranty,
+    errors
+):
+    conn = get_db()
+
+    conn.execute("""
+        UPDATE jobs
+        SET completed = ?,
+            under_warranty = ?,
+            errors = ?
+        WHERE id = ?
+    """, (
+        completed,
+        under_warranty,
+        errors,
+        job_id,
+    ))
+
+    conn.commit()
+    conn.close()
+
+def find_active_job():
+    conn = get_db()
+
+    row = conn.execute("""
+        SELECT id
+        FROM jobs
+        WHERE status IN ('queued', 'running')
+        LIMIT 1
+    """).fetchone()
+
+    conn.close()
+
+    return row["id"] if row else None
+#-----------------------------end db configs--------------------------#
 
 @app.route("/", methods=["GET"])
 def warranty_dashboard():
@@ -247,7 +357,14 @@ def process_chunk(job_id, imeis):
     active = 0
 
     try:
+        stop_event = job_stop_events[job_id]
         for imei in imeis:
+            if stop_event.is_set():
+                print(
+                    f"[JOB {job_id}] Stop requested. "
+                    "Worker will not process more IMEIs."
+                )
+                break
             status = "Error"
 
             print(
@@ -304,15 +421,18 @@ def process_chunk(job_id, imeis):
             with jobs_lock:
                 job = jobs[job_id]
                 job["completed"] += 1
-                job["under_warranty"] += int(
-                    status == "Under warranty"
-                )
-                job["errors"] += int(
-                    status in ("Unknown", "Error")
+                job["under_warranty"] += int(status == "Under warranty")
+                job["errors"] += int(status in ("Unknown", "Error"))
+                update_job_progress(
+                    job_id,
+                    job["completed"],
+                    job["under_warranty"],
+                    job["errors"]
                 )
 
             # Be gentle with the website between IMEIs.
-            time.sleep(2)
+            if not stop_event.is_set():
+                time.sleep(2)
 
     except Exception as exc:
         print(f"[WORKER FAILED] Job {job_id}: {exc}")
@@ -331,13 +451,66 @@ def process_chunk(job_id, imeis):
 
 
 
+# def run_job(job_id, imeis):
+#     """Split a batch across a bounded number of browser workers."""
+#     print(
+#         f"[JOB {job_id}] Starting batch with "
+#         f"{len(imeis)} IMEIs"
+#     )
+
+#     chunks = [
+#         imeis[i::MAX_WORKERS]
+#         for i in range(MAX_WORKERS)
+#     ]
+#     chunks = [chunk for chunk in chunks if chunk]
+
+#     with jobs_lock:
+#         jobs[job_id] = {}
+#         update_job_status(job_id, "running")
+#         jobs[job_id]["workers"] = len(chunks)
+
+#     futures = [
+#         executor.submit(process_chunk, job_id, chunk)
+#         for chunk in chunks
+#     ]
+
+#     for future in as_completed(futures):
+#         # process_chunk handles its own exceptions.
+#         future.result()
+
+#     with jobs_lock:
+#         job = jobs[job_id]
+#         final_status = (
+#             "completed"
+#             if job["completed"] == job["total"]
+#             else "completed_with_errors"
+#         )
+
+#         job["status"] = final_status
+
+#         update_job_status(
+#             job_id,
+#             final_status
+#         )
+
+
 def run_job(job_id, imeis):
-    """Split a batch across a bounded number of browser workers."""
+    """Run a batch with graceful stop support."""
+
+    stop_event = job_stop_events[job_id]
+
     print(
         f"[JOB {job_id}] Starting batch with "
         f"{len(imeis)} IMEIs"
     )
-    
+
+    # The job may have been stopped while waiting for the semaphore.
+    if stop_event.is_set():
+        with jobs_lock:
+            jobs[job_id]["status"] = "stopped"
+            update_job_status(job_id, "stopped")
+        return
+
     chunks = [
         imeis[i::MAX_WORKERS]
         for i in range(MAX_WORKERS)
@@ -345,8 +518,10 @@ def run_job(job_id, imeis):
     chunks = [chunk for chunk in chunks if chunk]
 
     with jobs_lock:
+        # Do not replace jobs[job_id]; preserve its counters.
         jobs[job_id]["status"] = "running"
         jobs[job_id]["workers"] = len(chunks)
+        update_job_status(job_id, "running")
 
     futures = [
         executor.submit(process_chunk, job_id, chunk)
@@ -354,31 +529,73 @@ def run_job(job_id, imeis):
     ]
 
     for future in as_completed(futures):
-        # process_chunk handles its own exceptions.
         future.result()
 
     with jobs_lock:
         job = jobs[job_id]
-        job["status"] = (
-            "completed"
-            if job["completed"] == job["total"]
-            else "completed_with_errors"
+
+        if stop_event.is_set():
+            final_status = "stopped"
+        elif job["completed"] == job["total"]:
+            final_status = "completed"
+        else:
+            final_status = "completed_with_errors"
+
+        job["status"] = final_status
+        update_job_status(job_id, final_status)
+
+        print(
+            f"[JOB {job_id}] Finished with status "
+            f"{final_status}. Processed "
+            f"{job['completed']}/{job['total']} IMEIs."
         )
+
 
 def run_job_serialized(job_id, imeis):
     """Allow only one batch to use the browser workers at a time."""
     with job_semaphore:
         run_job(job_id, imeis)
 
-def find_active_job():
-    """Return an existing queued or running job, if any."""
-    with jobs_lock:
-        for job_id, job in jobs.items():
-            if job["status"] in ("queued", "running"):
-                return job_id
 
-    return None
+def recover_interrupted_jobs():
+    conn = get_db()
+
+    conn.execute("""
+        UPDATE jobs
+        SET status = 'interrupted',
+            completed_at = CURRENT_TIMESTAMP
+        WHERE status IN ('queued', 'running')
+    """)
+
+    conn.commit()
+    conn.close()
+
+# def find_active_job():
+#     """Return an existing queued or running job, if any."""
+#     with jobs_lock:
+#         for job_id, job in jobs.items():
+#             if job["status"] in ("queued", "running"):
+#                 return job_id
+
+#     return None
 # ---------------- API ENDPOINTS ----------------
+@app.route("/api/jobs", methods=["GET"])
+def list_jobs():
+
+    conn = get_db()
+
+    rows = conn.execute("""
+        SELECT *
+        FROM jobs
+        ORDER BY created_at DESC
+    """).fetchall()
+
+    conn.close()
+
+    return jsonify([
+        dict(row)
+        for row in rows
+    ])
 
 @app.route("/api/warranty-check", methods=["POST"])
 def start_warranty_check():
@@ -442,6 +659,10 @@ def start_warranty_check():
             "messages": [],
         }
 
+        job_stop_events[job_id] = threading.Event()
+
+        create_job_record(job_id, len(imeis))
+
     # Run the batch outside the HTTP request.
     # executor.submit(run_job, job_id, imeis)
 
@@ -458,6 +679,87 @@ def start_warranty_check():
         "status_url": f"/api/warranty-check/{job_id}",
     }), 202
 
+@app.route("/api/warranty-check/<job_id>/stop", methods=["POST"])
+def stop_warranty_job(job_id):
+    with jobs_lock:
+        conn = get_db()
+        row = conn.execute(
+            "SELECT status FROM jobs WHERE id = ?",
+            (job_id,)
+        ).fetchone()
+        conn.close()
+
+        if row is None:
+            return jsonify({"error": "Job not found."}), 404
+
+        if row["status"] not in ("queued", "running"):
+            return jsonify({
+                "message": "Job is no longer running.",
+                "status": row["status"]
+            }), 409
+
+        # SQLite may contain jobs from a previous Flask process.
+        job = jobs.get(job_id)
+        stop_event = job_stop_events.get(job_id)
+
+        if job is None or stop_event is None:
+            return jsonify({
+                "error": (
+                    "This job is in the database but is not registered "
+                    "in the current Flask process. It may have been "
+                    "interrupted by an application restart."
+                ),
+                "job_id": job_id,
+                "database_status": row["status"]
+            }), 409
+
+        stop_event.set()
+
+        return jsonify({
+            "message": (
+                "Stop requested. Workers will finish their current "
+                "IMEI checks before stopping."
+            ),
+            "job_id": job_id,
+            "status": "stopping"
+        }), 202
+
+# @app.route("/api/warranty-check/<job_id>/stop", methods=["POST"])
+# def stop_warranty_job(job_id):
+#     with jobs_lock:
+#         # Check persistent job status.
+#         conn = get_db()
+#         row = conn.execute(
+#             "SELECT status FROM jobs WHERE id = ?",
+#             (job_id,)
+#         ).fetchone()
+#         conn.close()
+
+#         if row is None:
+#             return jsonify({
+#                 "error": "Job not found."
+#             }), 404
+
+#         if row["status"] not in ("queued", "running"):
+#             return jsonify({
+#                 "message": "Job is no longer running.",
+#                 "status": row["status"]
+#             }), 409
+
+#         stop_event = job_stop_events.get(job_id)
+
+#         if stop_event is None:
+#             return jsonify({
+#                 "error": "Stop signal is unavailable for this job."
+#             }), 409
+
+#         stop_event.set()
+
+#         return jsonify({
+#             "message": "Stop requested. The current IMEI will be allowed to finish.",
+#             "job_id": job_id,
+#             "status": "stopping"
+#         }), 202
 
 # @app.route("/api/warranty-check/<job_id>", methods=["GET"])
 # def get_warranty_job(job_id):
@@ -482,31 +784,61 @@ def start_warranty_check():
 #         "results_csv": str(RESULTS_CSV),
 #     })
 
+# @app.route("/api/warranty-check/<job_id>", methods=["GET"])
+# def get_warranty_job(job_id):
+#     """Return progress for a submitted batch."""
+
+#     with jobs_lock:
+#         job = jobs.get(job_id)
+
+#         if job is None:
+#             return jsonify({
+#                 "error": "Job not found."
+#             }), 404
+
+#         result = dict(job)
+
+#     result["progress_percent"] = round(
+#         result["completed"] / result["total"] * 100, 2
+#     ) if result["total"] else 0
+
+#     active_csv, results_csv = get_batch_paths(job_id)
+
+#     return jsonify({
+#         "job_id": job_id,
+#         **result,
+#         "active_csv": str(active_csv),
+#         "results_csv": str(results_csv),
+#     })
+
 @app.route("/api/warranty-check/<job_id>", methods=["GET"])
 def get_warranty_job(job_id):
-    """Return progress for a submitted batch."""
+    conn = get_db()
 
-    with jobs_lock:
-        job = jobs.get(job_id)
+    job = conn.execute("""
+    SELECT *
+    FROM jobs
+    WHERE id = ?
+    """, (job_id,)).fetchone()
+    conn.close()
+    if job is None:
+        return jsonify({
+        "error": "Job not found"
+        }), 404
 
-        if job is None:
-            return jsonify({
-                "error": "Job not found."
-            }), 404
-
-        result = dict(job)
+    result = dict(job)
 
     result["progress_percent"] = round(
-        result["completed"] / result["total"] * 100, 2
+    result["completed"] / result["total"] * 100,
+    2
     ) if result["total"] else 0
 
     active_csv, results_csv = get_batch_paths(job_id)
 
     return jsonify({
-        "job_id": job_id,
-        **result,
-        "active_csv": str(active_csv),
-        "results_csv": str(results_csv),
+    **result,
+    "active_csv": str(active_csv),
+    "results_csv": str(results_csv)
     })
 
 
@@ -975,7 +1307,7 @@ def check_imei(driver, imei):
             )
             raise
 
-        except RateLimitedError:
+        except RateLimitedError as exc:
             print(
                 f"[RATE LIMIT ERROR] IMEI {imei}: {exc}"
             )
@@ -1224,57 +1556,6 @@ def check_imei(driver, imei):
 #         )
 #     )
 
-# @app.route("/api/warranty-check/active-imeis", methods=["GET"])
-# def get_active_imeis():
-#     """Download active IMEIs from the latest batch, or a specified batch."""
-
-#     requested_job_id = request.args.get("job_id")
-
-#     with jobs_lock:
-#         job_id = requested_job_id or latest_job_id
-
-#         if not job_id or job_id not in jobs:
-#             return jsonify({
-#                 "error": "No valid warranty batch found."
-#             }), 404
-
-#     active_csv, _ = get_batch_paths(job_id)
-
-#     if not active_csv.exists():
-#         return jsonify({
-#             "error": "Active IMEI file not found for this batch."
-#         }), 404
-
-#     excel_file = BATCHES_DIR / job_id / "active_imeis.xlsx"
-
-#     with csv_lock:
-#         active_imeis = read_csv_column(active_csv)
-
-#         workbook = Workbook()
-#         worksheet = workbook.active
-#         worksheet.title = "Active IMEIs"
-#         worksheet.append(["IMEI"])
-
-#         for imei in sorted(active_imeis):
-#             worksheet.append([str(imei)])
-#             worksheet.cell(
-#                 row=worksheet.max_row,
-#                 column=1
-#             ).number_format = "@"
-
-#         workbook.save(excel_file)
-#         workbook.close()
-
-#     return send_file(
-#         excel_file,
-#         as_attachment=True,
-#         download_name=f"active_imeis_{job_id}.xlsx",
-#         mimetype=(
-#             "application/vnd.openxmlformats-officedocument."
-#             "spreadsheetml.sheet"
-#         ),
-#     ) #in excel format
-
 @app.route("/api/warranty-check/active-imeis", methods=["GET"])
 def get_active_imeis():
     """Download active IMEIs from the latest batch, or a specified batch."""
@@ -1296,24 +1577,75 @@ def get_active_imeis():
             "error": "Active IMEI file not found for this batch."
         }), 404
 
-    csv_file = BATCHES_DIR / job_id / "active_imeis_download.csv"
+    excel_file = BATCHES_DIR / job_id / "active_imeis.xlsx"
 
     with csv_lock:
         active_imeis = read_csv_column(active_csv)
 
-        with open(csv_file, "w", newline="", encoding="utf-8-sig") as file:
-            writer = csv.writer(file)
-            writer.writerow(["IMEI"])
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Active IMEIs"
+        worksheet.append(["IMEI"])
 
-            for imei in sorted(active_imeis):
-                writer.writerow([str(imei)])
+        for imei in sorted(active_imeis):
+            worksheet.append([str(imei)])
+            worksheet.cell(
+                row=worksheet.max_row,
+                column=1
+            ).number_format = "@"
+
+        workbook.save(excel_file)
+        workbook.close()
 
     return send_file(
-        csv_file,
+        excel_file,
         as_attachment=True,
-        download_name=f"active_imeis_{job_id}.csv",
-        mimetype="text/csv",
-    ) #in csv format
+        download_name=f"active_imeis_{job_id}.xlsx",
+        mimetype=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+    ) #in excel format
+
+# @app.route("/api/warranty-check/active-imeis", methods=["GET"])
+# def get_active_imeis():
+#     """Download active IMEIs from the latest batch, or a specified batch."""
+
+#     requested_job_id = request.args.get("job_id")
+
+#     with jobs_lock:
+#         job_id = requested_job_id or latest_job_id
+
+#         if not job_id or job_id not in jobs:
+#             return jsonify({
+#                 "error": "No valid warranty batch found."
+#             }), 404
+
+#     active_csv, _ = get_batch_paths(job_id)
+
+#     if not active_csv.exists():
+#         return jsonify({
+#             "error": "Active IMEI file not found for this batch."
+#         }), 404
+
+#     csv_file = BATCHES_DIR / job_id / "active_imeis_download.csv"
+
+#     with csv_lock:
+#         active_imeis = read_csv_column(active_csv)
+
+#         with open(csv_file, "w", newline="", encoding="utf-8-sig") as file:
+#             writer = csv.writer(file)
+#             writer.writerow(["IMEI"])
+
+#             for imei in sorted(active_imeis):
+#                 writer.writerow([str(imei)])
+
+#     return send_file(
+#         csv_file,
+#         as_attachment=True,
+#         download_name=f"active_imeis_{job_id}.csv",
+#         mimetype="text/csv",
+#     ) #in csv format
 
 
 
@@ -1387,7 +1719,8 @@ def main():
 
 if __name__ == "__main__":
     create_csv_if_missing()
-
+    init_db()
+    recover_interrupted_jobs()
     app.run(
         host="0.0.0.0",
         port=5006,

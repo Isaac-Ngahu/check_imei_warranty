@@ -15,12 +15,14 @@ const copyJobBtn = document.getElementById("copyJobBtn");
 
 let currentJobId = localStorage.getItem(STORAGE_KEY);
 let pollHandle = null;
+let stopRequested = false;
 
 function setMessage(elementId, message, type = "info") {
     const element = document.getElementById(elementId);
     element.textContent = message;
     element.className = `message ${type}`;
 }
+
 
 function getNormalizedImeis() {
     const values = imeiInput.value
@@ -41,6 +43,12 @@ function getNormalizedImeis() {
     }
 
     return unique;
+}
+
+function clearSavedJobId() {
+    localStorage.removeItem(STORAGE_KEY);
+    currentJobId = null;
+    renderJobId();
 }
 
 function updateImeiCount() {
@@ -152,6 +160,96 @@ async function handleFile(file) {
     }
 }
 
+
+async function stopWarrantyJob() {
+    if (!currentJobId || stopRequested) return;
+
+    if (!confirm("Stop this warranty check?")) return;
+
+    const jobId = currentJobId;
+
+    stopRequested = true;
+    stopBtn.disabled = true;
+    stopBtn.classList.add("is-stopping");
+    stopBtn.innerHTML =
+        '<span class="stop-icon" aria-hidden="true"></span> Stopping...';
+
+    setMessage(
+        "jobMessage",
+        "Stop requested. Waiting for current IMEI checks to finish...",
+        "info"
+    );
+
+    // Continue polling while the workers shut down.
+    startPolling();
+
+    try {
+        const response = await fetch(
+            `${API_BASE}/api/warranty-check/${encodeURIComponent(jobId)}/stop`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                }
+            }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            // The job may already have finished. Refresh its real status.
+            await refreshJobStatus();
+
+            if (
+                currentJobId === jobId &&
+                !["stopped", "completed", "completed_with_errors", "failed"]
+                    .includes(
+                        document.getElementById("jobStatus")
+                            .textContent.trim().toLowerCase().replaceAll(" ", "_")
+                    )
+            ) {
+                throw new Error(
+                    data.error || data.message || "Unable to stop the job."
+                );
+            }
+
+            return;
+        }
+
+        setMessage(
+            "jobMessage",
+            data.message || "Stop requested. Waiting for workers to finish...",
+            "info"
+        );
+
+        await refreshJobStatus();
+    } catch (error) {
+        stopRequested = false;
+
+        setMessage(
+    "jobMessage",
+    data.message || "Stop requested. Waiting for workers to finish...",
+    "info"
+    );
+
+    // Refresh while the job ID is still available.
+    await refreshJobStatus();
+
+    // Remove the saved ID after the stop request is accepted.
+    clearSavedJobId();
+    stopPolling();
+
+    setMessage(
+        "jobMessage",
+        "Stop requested successfully. The job ID has been cleared.",
+        "success"
+    );
+    }
+}
+
+stopBtn.addEventListener("click", stopWarrantyJob);
+
+
 async function submitWarrantyJob() {
     const imeis = getNormalizedImeis();
 
@@ -214,22 +312,40 @@ function renderJobId() {
     refreshBtn.disabled = !currentJobId;
 }
 
+
 function renderJobStatus(job) {
     const total = Number(job.total || 0);
     const completed = Number(job.completed || 0);
+
     const progress = Math.min(
         100,
         Math.max(0, Number(job.progress_percent || 0))
     );
 
+    const status = String(job.status || "unknown").toLowerCase();
+
+    const terminal = [
+        "completed",
+        "completed_with_errors",
+        "stopped",
+        "failed"
+    ].includes(status);
+
+    const isStopping = stopRequested &&
+        ["queued", "running"].includes(status);
+
     document.getElementById("jobStatus").textContent =
-        String(job.status || "unknown").replaceAll("_", " ");
+        isStopping ? "Stopping..." : status.replaceAll("_", " ");
 
     document.getElementById("progressText").textContent = `${progress}%`;
     document.getElementById("progressFill").style.width = `${progress}%`;
-    document.getElementById("progressBar").setAttribute("aria-valuenow", progress);
 
-    document.getElementById("totalCount").textContent = total.toLocaleString();
+    document.getElementById("progressBar")
+        .setAttribute("aria-valuenow", progress);
+
+    document.getElementById("totalCount").textContent =
+        total.toLocaleString();
+
     document.getElementById("completedCount").textContent =
         completed.toLocaleString();
 
@@ -239,30 +355,46 @@ function renderJobStatus(job) {
     document.getElementById("errorCount").textContent =
         Number(job.errors || 0).toLocaleString();
 
-    const terminal = [
-        "completed",
-        "completed_with_errors",
-        "failed"
-    ].includes(job.status);
+    stopBtn.disabled = terminal || isStopping ||
+        !["queued", "running"].includes(status);
+
+    stopBtn.classList.toggle("is-stopping", isStopping);
+
+    stopBtn.innerHTML = isStopping
+        ? '<span class="stop-icon" aria-hidden="true"></span> Stopping...'
+        : '<span class="stop-icon" aria-hidden="true"></span> Stop job';
 
     if (terminal) {
+        stopRequested = false;
         stopPolling();
+
+        const messages = {
+            completed: "Processing completed. You can download the active IMEIs.",
+            completed_with_errors:
+                "Processing finished with errors. You can download the active IMEIs.",
+            stopped:
+                `Job stopped. ${completed.toLocaleString()} of ${total.toLocaleString()} IMEIs were processed.`,
+            failed: "The warranty check job failed."
+        };
 
         setMessage(
             "jobMessage",
-            job.status === "completed"
-                ? "Processing completed. You can download the active IMEIs."
-                : `Processing finished with status: ${job.status.replaceAll("_", " ")}.`,
-            job.status === "completed" ? "success" : "info"
+            messages[status] || `Job finished: ${status}`,
+            status === "completed" ? "success" : "info"
         );
-    } else {
-        setMessage(
-            "jobMessage",
-            `Processed ${completed.toLocaleString()} of ${total.toLocaleString()} IMEIs.`,
-            "info"
-        );
+
+        return;
     }
+
+    setMessage(
+        "jobMessage",
+        isStopping
+            ? `Stopping safely. Processed ${completed.toLocaleString()} of ${total.toLocaleString()} IMEIs so far.`
+            : `Processed ${completed.toLocaleString()} of ${total.toLocaleString()} IMEIs.`,
+        "info"
+    );
 }
+
 
 async function refreshJobStatus() {
     if (!currentJobId) {
@@ -296,7 +428,7 @@ async function refreshJobStatus() {
 
         renderJobStatus(data);
 
-        if (!["completed", "completed_with_errors", "failed"].includes(data.status)) {
+        if (!["completed","stopped", "completed_with_errors", "failed"].includes(data.status)) {
             startPolling();
         }
     } catch (error) {
