@@ -250,6 +250,10 @@ def process_chunk(job_id, imeis):
         for imei in imeis:
             status = "Error"
 
+            print(
+                f"[JOB {job_id}] Processing IMEI {imei}"
+            )
+
             # Initial attempt plus one attempt with a replacement browser.
             for browser_attempt in range(1, 3):
                 try:
@@ -329,7 +333,11 @@ def process_chunk(job_id, imeis):
 
 def run_job(job_id, imeis):
     """Split a batch across a bounded number of browser workers."""
-
+    print(
+        f"[JOB {job_id}] Starting batch with "
+        f"{len(imeis)} IMEIs"
+    )
+    
     chunks = [
         imeis[i::MAX_WORKERS]
         for i in range(MAX_WORKERS)
@@ -362,6 +370,14 @@ def run_job_serialized(job_id, imeis):
     with job_semaphore:
         run_job(job_id, imeis)
 
+def find_active_job():
+    """Return an existing queued or running job, if any."""
+    with jobs_lock:
+        for job_id, job in jobs.items():
+            if job["status"] in ("queued", "running"):
+                return job_id
+
+    return None
 # ---------------- API ENDPOINTS ----------------
 
 @app.route("/api/warranty-check", methods=["POST"])
@@ -400,6 +416,15 @@ def start_warranty_check():
     if not imeis:
         return jsonify({"error": "No valid IMEIs supplied."}), 400
 
+    active_job_id = find_active_job()
+
+    if active_job_id:
+        return jsonify({
+            "error": "Another warranty check is already in progress.",
+            "active_job_id": active_job_id,
+            "status_url": f"/api/warranty-check/{active_job_id}",
+        }), 409
+    
     job_id = str(uuid.uuid4())
     create_batch_csvs(job_id)
 
@@ -434,6 +459,29 @@ def start_warranty_check():
     }), 202
 
 
+# @app.route("/api/warranty-check/<job_id>", methods=["GET"])
+# def get_warranty_job(job_id):
+#     """Return progress for a submitted batch."""
+
+#     with jobs_lock:
+#         job = jobs.get(job_id)
+
+#         if job is None:
+#             return jsonify({"error": "Job not found."}), 404
+
+#         result = dict(job)
+
+#     result["progress_percent"] = round(
+#         result["completed"] / result["total"] * 100, 2
+#     ) if result["total"] else 0
+
+#     return jsonify({
+#         "job_id": job_id,
+#         **result,
+#         "active_csv": str(ACTIVE_CSV),
+#         "results_csv": str(RESULTS_CSV),
+#     })
+
 @app.route("/api/warranty-check/<job_id>", methods=["GET"])
 def get_warranty_job(job_id):
     """Return progress for a submitted batch."""
@@ -442,7 +490,9 @@ def get_warranty_job(job_id):
         job = jobs.get(job_id)
 
         if job is None:
-            return jsonify({"error": "Job not found."}), 404
+            return jsonify({
+                "error": "Job not found."
+            }), 404
 
         result = dict(job)
 
@@ -450,11 +500,13 @@ def get_warranty_job(job_id):
         result["completed"] / result["total"] * 100, 2
     ) if result["total"] else 0
 
+    active_csv, results_csv = get_batch_paths(job_id)
+
     return jsonify({
         "job_id": job_id,
         **result,
-        "active_csv": str(ACTIVE_CSV),
-        "results_csv": str(RESULTS_CSV),
+        "active_csv": str(active_csv),
+        "results_csv": str(results_csv),
     })
 
 
