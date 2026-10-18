@@ -12,4 +12,4 @@ RUN apt-get update && apt-get install -y chromium chromium-driver
 # 🔥 THIS is the key fix (handles Debian changes automatically)
 # RUN playwright install --with-deps chromium
 
-CMD ["gunicorn", "check_warranty:app", "-b", "0.0.0.0:8080"]
+CMD ["gunicorn", "app:app", "-b", "0.0.0.0:8080"]
