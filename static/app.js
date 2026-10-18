@@ -280,6 +280,7 @@ async function submitWarrantyJob() {
         const data = await response.json();
 
         if (!response.ok) {
+            clearSavedJobId()
             throw new Error(data.error || "Could not submit the job.");
         }
 
