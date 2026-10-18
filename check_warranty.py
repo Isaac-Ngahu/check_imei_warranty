@@ -2,6 +2,7 @@
 import csv
 import time
 from datetime import datetime
+import os
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from selenium import webdriver
@@ -26,8 +27,9 @@ RESULT_URL = (
     "https://www.carlcare.com/sa_en/warranty-check/warranty/show/"
 )
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMEI_FILE = BASE_DIR / "imeis.txt"
+
 
 ACTIVE_CSV = BASE_DIR / "active_imeis.csv"
 RESULTS_CSV = BASE_DIR / "search_results.csv"
@@ -73,7 +75,7 @@ latest_job_id = None
 
 #------------------------------db configs---------------------------#
 import sqlite3
-DB_FILE = BASE_DIR / "jobs.db"
+DB_FILE = os.path.join(BASE_DIR, "jobs.db")
 def get_db():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
@@ -815,11 +817,23 @@ def stop_warranty_job(job_id):
 def get_warranty_job(job_id):
     conn = get_db()
 
+    print("DB_FILE:", DB_FILE)
+    print("DB exists:", os.path.exists(DB_FILE))
+
+    tables = conn.execute("""
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+    """).fetchall()
+
+    print("Tables:", [row["name"] for row in tables])
+
     job = conn.execute("""
     SELECT *
     FROM jobs
     WHERE id = ?
     """, (job_id,)).fetchone()
+    
     conn.close()
     if job is None:
         return jsonify({
