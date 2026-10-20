@@ -485,7 +485,7 @@ async function downloadActiveImeis() {
         const link = document.createElement("a");
 
         link.href = objectUrl;
-        link.download = `active_imeis_${currentJobId}.csv`;
+        link.download = `active_imeis_${currentJobId}.xlsx`;
 
         document.body.appendChild(link);
         link.click();

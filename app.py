@@ -3,6 +3,7 @@ import csv
 import time
 from datetime import datetime
 import os
+from io import BytesIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from selenium import webdriver
@@ -1595,9 +1596,11 @@ def check_imei(driver, imei):
 #         )
 #     )
 
+
+
 @app.route("/api/warranty-check/active-imeis", methods=["GET"])
 def get_active_imeis():
-    """Download active IMEIs from the latest batch, or a specified batch."""
+    print("[ACTIVE IMEIS] Excel download endpoint called")
 
     requested_job_id = request.args.get("job_id")
 
@@ -1616,15 +1619,13 @@ def get_active_imeis():
             "error": "Active IMEI file not found for this batch."
         }), 404
 
-    excel_file = BATCHES_DIR / job_id / "active_imeis.xlsx"
-
     with csv_lock:
         active_imeis = read_csv_column(active_csv)
 
         workbook = Workbook()
         worksheet = workbook.active
         worksheet.title = "Active IMEIs"
-        worksheet.append(["IMEI"])
+        worksheet.append(["IMEIS"])
 
         for imei in sorted(active_imeis):
             worksheet.append([str(imei)])
@@ -1633,18 +1634,85 @@ def get_active_imeis():
                 column=1
             ).number_format = "@"
 
-        workbook.save(excel_file)
+        output = BytesIO()
+        workbook.save(output)
         workbook.close()
+        output.seek(0)
 
-    return send_file(
-        excel_file,
+    filename = f"active_imeis_{job_id}.xlsx"
+
+    response = send_file(
+        output,
         as_attachment=True,
-        download_name=f"active_imeis_{job_id}.xlsx",
+        download_name=filename,
         mimetype=(
             "application/vnd.openxmlformats-officedocument."
             "spreadsheetml.sheet"
-        ),
-    ) #in excel format
+        )
+    )
+
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="{filename}"'
+    )
+    response.headers["X-Download-Format"] = "xlsx"
+
+    print("[ACTIVE IMEIS] Filename:", filename)
+    print("[ACTIVE IMEIS] Content-Type:", response.content_type)
+    print(
+        "[ACTIVE IMEIS] Content-Disposition:",
+        response.headers.get("Content-Disposition")
+    )
+
+    return response
+
+# @app.route("/api/warranty-check/active-imeis", methods=["GET"])
+# def get_active_imeis():
+#     requested_job_id = request.args.get("job_id")
+
+#     with jobs_lock:
+#         job_id = requested_job_id or latest_job_id
+
+#         if not job_id or job_id not in jobs:
+#             return jsonify({
+#                 "error": "No valid warranty batch found."
+#             }), 404
+
+#     active_csv, _ = get_batch_paths(job_id)
+
+#     if not active_csv.exists():
+#         return jsonify({
+#             "error": "Active IMEI file not found for this batch."
+#         }), 404
+
+#     with csv_lock:
+#         active_imeis = read_csv_column(active_csv)
+
+#         workbook = Workbook()
+#         worksheet = workbook.active
+#         worksheet.title = "Active IMEIs"
+#         worksheet.append(["IMEI"])
+
+#         for imei in sorted(active_imeis):
+#             worksheet.append([str(imei)])
+#             worksheet.cell(
+#                 row=worksheet.max_row,
+#                 column=1
+#             ).number_format = "@"
+
+#         output = BytesIO()
+#         workbook.save(output)
+#         workbook.close()
+#         output.seek(0)
+
+#     return send_file(
+#         output,
+#         as_attachment=True,
+#         download_name=f"active_imeis_{job_id}.xlsx",
+#         mimetype=(
+#             "application/vnd.openxmlformats-officedocument."
+#             "spreadsheetml.sheet"
+#         )
+#     ) #in excel format
 
 # @app.route("/api/warranty-check/active-imeis", methods=["GET"])
 # def get_active_imeis():
@@ -1763,7 +1831,7 @@ if __name__ == "__main__":
     # recover_interrupted_jobs()
     app.run(
         host="0.0.0.0",
-        port=5006,
+        port=5007,
         threaded=True,
         use_reloader=False,
         debug=True
