@@ -429,6 +429,56 @@ footer {
     line-height: 1.5;
 }
 
+
+/* Restart application button */
+.button.restart-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: #3157d5;
+    background: #fff;
+    border: 1px solid #d5dce7;
+    border-radius: 9px;
+    font-weight: 650;
+    transition:
+        background 0.2s ease,
+        border-color 0.2s ease,
+        color 0.2s ease;
+}
+
+.button.restart-button:hover:not(:disabled) {
+    background: #f3f6ff;
+    border-color: #b8c7f7;
+    color: #2546b5;
+}
+
+.button.restart-button:focus-visible {
+    outline: 3px solid rgb(66 99 235 / 20%);
+    outline-offset: 2px;
+}
+
+.restart-icon {
+    flex-shrink: 0;
+    transition: transform 0.3s ease;
+}
+
+.button.restart-button:hover:not(:disabled) .restart-icon {
+    transform: rotate(45deg);
+}
+
+.button.restart-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.button.restart-button.is-restarting {
+    background: #f3f6ff;
+    border-color: #b8c7f7;
+    cursor: wait;
+}
+
+
 @media (max-width: 640px) {
     .job-actions {
         align-items: flex-start;

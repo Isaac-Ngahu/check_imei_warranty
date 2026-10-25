@@ -13,8 +13,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-
-
+import hmac
+import subprocess
+import urllib.request
+import urllib.error
 from openpyxl import Workbook
 from flask import Flask, jsonify, request, send_file,render_template
 import traceback
@@ -75,6 +77,104 @@ BATCHES_DIR.mkdir(parents=True, exist_ok=True)
 
 latest_job_id = None
 
+#----------------------------------------restart helper--------------------------------------#
+def restart_railway_deployment():
+    """Request a restart of this service's latest successful deployment."""
+
+    api_token = os.environ.get("RAILWAY_API_TOKEN")
+    project_id = os.environ.get("RAILWAY_PROJECT_ID")
+    service_id = os.environ.get("RAILWAY_SERVICE_ID")
+    environment_id = os.environ.get("RAILWAY_ENVIRONMENT_ID")
+
+    required = {
+        "RAILWAY_API_TOKEN": api_token,
+        "RAILWAY_PROJECT_ID": project_id,
+        "RAILWAY_SERVICE_ID": service_id,
+        "RAILWAY_ENVIRONMENT_ID": environment_id,
+    }
+
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "Missing Railway configuration: " + ", ".join(missing)
+        )
+
+    endpoint = "https://backboard.railway.com/graphql/v2"
+
+    # Find the latest successful deployment for this service/environment.
+    query = """
+    query ($input: DeploymentListInput!, $first: Int) {
+        deployments(input: $input, first: $first) {
+            edges {
+                node {
+                    id
+                    status
+                }
+            }
+        }
+    }
+    """
+
+    variables = {
+        "input": {
+            "projectId": project_id,
+            "serviceId": service_id,
+            "environmentId": environment_id,
+            "status": {"successfulOnly": True},
+        },
+        "first": 1,
+    }
+
+    def railway_graphql(document, variables):
+        body = json.dumps({
+            "query": document,
+            "variables": variables,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=20) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        # GraphQL can return HTTP 200 even when the operation failed.
+        if result.get("errors"):
+            raise RuntimeError(
+                "Railway API error: " + json.dumps(result["errors"])
+            )
+
+        return result.get("data") or {}
+
+    data = railway_graphql(query, variables)
+    edges = data.get("deployments", {}).get("edges", [])
+
+    if not edges:
+        raise RuntimeError(
+            "Railway did not return a successful deployment to restart."
+        )
+
+    deployment_id = edges[0]["node"]["id"]
+
+    mutation = """
+    mutation ($id: String!) {
+        deploymentRestart(id: $id)
+    }
+    """
+
+    result = railway_graphql(mutation, {"id": deployment_id})
+
+    app.logger.info(
+        "Railway restart request submitted for deployment %s: %s",
+        deployment_id,
+        result,
+    )
 
 #------------------------------db configs---------------------------#
 import sqlite3
@@ -870,11 +970,21 @@ def get_warranty_job(job_id):
 
     active_csv, results_csv = get_batch_paths(job_id)
 
+    print("job status",result["status"])
+
+    if result["status"].lower() in ['queued',"running"]:
+        return jsonify({
+        **result,
+        "active_csv": str(active_csv),
+        "results_csv": str(results_csv)
+        }),200
+    
     return jsonify({
-    **result,
-    "active_csv": str(active_csv),
-    "results_csv": str(results_csv)
-    })
+        **result,
+        "active_csv": str(active_csv),
+        "results_csv": str(results_csv)
+        }),409
+    
 
 
 # ---------------- EXCEL HELPERS ----------------
@@ -1596,7 +1706,146 @@ def check_imei(driver, imei):
 #         )
 #     )
 
+RESTART_TOKEN = os.environ.get("RESTART_TOKEN")
 
+
+@app.route("/api/application/restart", methods=["POST"])
+def restart_application():
+    expected_token = os.environ.get("RESTART_TOKEN", "")
+    supplied_token = request.headers.get("X-Restart-Token", "")
+
+    if not expected_token:
+        return jsonify({
+            "error": "Restart endpoint is not configured."
+        }), 503
+
+    if not hmac.compare_digest(supplied_token, expected_token):
+        return jsonify({"error": "Unauthorized."}), 401
+
+    # Check the existing job database before restarting the service.
+    db_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "jobs.db",
+    )
+
+    try:
+        with sqlite3.connect(db_path, timeout=5) as conn:
+            active_job = conn.execute("""
+                SELECT id, status
+                FROM jobs
+                WHERE LOWER(status) IN ('queued', 'running', 'stopping')
+                LIMIT 1
+            """).fetchone()
+
+    except sqlite3.Error:
+        app.logger.exception("Could not check active warranty jobs")
+        return jsonify({
+            "error": "Could not verify job status. Restart cancelled."
+        }), 500
+
+    if active_job:
+        return jsonify({
+            "error": "A warranty job is still active.",
+            "active_job_id": active_job[0],
+            "status": active_job[1],
+            "message": "Wait for the job to finish before restarting."
+        }), 409
+
+    # # Validate configuration before accepting the request.
+    # required = [
+    #     "RAILWAY_API_TOKEN",
+    #     "RAILWAY_PROJECT_ID",
+    #     "RAILWAY_SERVICE_ID",
+    #     "RAILWAY_ENVIRONMENT_ID",
+    # ]
+    # missing = [
+    #     key for key in required if not os.environ.get(key)
+    # ]
+
+    # if missing:
+    #     return jsonify({
+    #         "error": "Missing Railway configuration: " + ", ".join(missing)
+    #     }), 503
+
+    def restart_in_background():
+        # Give Flask time to send its response before calling Railway.
+        time.sleep(2)
+
+        try:
+            restart_railway_deployment()
+        except Exception:
+            app.logger.exception(
+                "Railway deployment restart request failed"
+            )
+
+    threading.Thread(
+        target=restart_in_background,
+        name="railway-deployment-restart",
+        daemon=True,
+    ).start()
+
+    return jsonify({
+        "message": "Restart request accepted by the application.",
+        "status": "restart_scheduled"
+    }), 202
+
+
+# @app.route("/api/application/restart", methods=["POST"])
+# def restart_application():
+#     # Require an authorization token.
+#     if not RESTART_TOKEN:
+#         return jsonify({
+#             "error": "Restart endpoint is not configured."
+#         }), 503
+
+#     supplied_token = request.headers.get(
+#         "X-Restart-Token", ""
+#     )
+
+#     if not hmac.compare_digest(supplied_token, RESTART_TOKEN):
+#         return jsonify({
+#             "error": "Unauthorized."
+#         }), 401
+
+#     # Do not restart while warranty checks are running.
+#     active_job_id = find_active_job()
+
+#     if active_job_id:
+#         return jsonify({
+#             "error": "A warranty job is still queued or running.",
+#             "active_job_id": active_job_id,
+#             "message": "Stop or finish the active job before restarting."
+#         }), 409
+
+#     try:
+#         # Ask systemd to restart the service independently.
+#         subprocess.Popen(
+#             [
+#                 "sudo", "-n",
+#                 "/usr/bin/systemd-run",
+#                 "--unit=warranty-checker-restart",
+#                 "--on-active=3s",
+#                 "/usr/bin/systemctl",
+#                 "restart",
+#                 "warranty-checker.service"
+#             ],
+#             stdin=subprocess.DEVNULL,
+#             stdout=subprocess.DEVNULL,
+#             stderr=subprocess.DEVNULL,
+#             start_new_session=True
+#         )
+
+#         return jsonify({
+#             "message": "Application restart scheduled.",
+#             "status": "restarting"
+#         }), 202
+
+#     except Exception:
+#         app.logger.exception("Failed to schedule application restart")
+
+#         return jsonify({
+#             "error": "Could not schedule application restart."
+#         }), 500
 
 @app.route("/api/warranty-check/active-imeis", methods=["GET"])
 def get_active_imeis():

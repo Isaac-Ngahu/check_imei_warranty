@@ -12,6 +12,7 @@ const clearBtn = document.getElementById("clearBtn");
 const refreshBtn = document.getElementById("refreshBtn");
 const downloadBtn = document.getElementById("downloadBtn");
 const copyJobBtn = document.getElementById("copyJobBtn");
+const restartBtn = document.getElementById("restartBtn");
 
 let currentJobId = localStorage.getItem(STORAGE_KEY);
 let pollHandle = null;
@@ -50,6 +51,74 @@ function clearSavedJobId() {
     currentJobId = null;
     renderJobId();
 }
+
+
+async function restartApplication() {
+    const confirmed = confirm(
+        "Restart the Warranty Checker?\n\n" +
+        "Make sure all warranty jobs have finished first."
+    );
+
+    if (!confirmed) return;
+
+    const restartToken = prompt(
+        "Enter the administrator restart token:"
+    );
+
+    if (!restartToken || !restartToken.trim()) {
+        return;
+    }
+
+    restartBtn.disabled = true;
+    restartBtn.textContent = "Scheduling restart...";
+
+    setMessage(
+        "jobMessage",
+        "Sending restart request...",
+        "info"
+    );
+
+    try {
+        const response = await fetch(
+            `${API_BASE}/api/application/restart`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-Restart-Token": restartToken.trim()
+                },
+                cache: "no-store"
+            }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(
+                data.error || "Could not schedule the restart."
+            );
+        }
+
+        setMessage(
+            "jobMessage",
+            "Restart request accepted. The dashboard will reconnect shortly.",
+            "success"
+        );
+
+        restartBtn.textContent = "Restart scheduled";
+
+        // Railway may need longer than this to bring the service back.
+        window.setTimeout(() => {
+            window.location.reload();
+        }, 1000);
+
+    } catch (error) {
+        setMessage("jobMessage", error.message, "error");
+        restartBtn.disabled = false;
+        restartBtn.textContent = "Restart application";
+    }
+}
+
 
 function updateImeiCount() {
     const imeis = getNormalizedImeis();
@@ -397,8 +466,17 @@ function renderJobStatus(job) {
 }
 
 
+const TERMINAL_STATUSES = [
+    "completed",
+    "stopped",
+    "completed_with_errors",
+    "failed",
+    "interrupted"
+];
+
 async function refreshJobStatus() {
     if (!currentJobId) {
+        stopPolling();
         setMessage("jobMessage", "Submit a batch to get started.", "info");
         return;
     }
@@ -413,26 +491,41 @@ async function refreshJobStatus() {
 
         const data = await response.json();
 
+        console.log("HTTP status:", response.status);
+        console.log("Response OK:", response.ok);
+        console.log("Job status:", data.status);
+
         if (!response.ok) {
-            if (response.status === 404) {
+            if (response.status === 404 || response.status === 409) {
                 stopPolling();
+
                 setMessage(
                     "jobMessage",
-                    "This job is no longer available on the server. The saved ID may belong to a previous server session.",
+                    data.error || "This job is no longer available on the server.",
                     "error"
                 );
+
                 return;
             }
 
-            throw new Error(data.error || "Could not retrieve job status.");
+            throw new Error(
+                data.error || "Could not retrieve job status."
+            );
         }
 
         renderJobStatus(data);
 
-        if (!["completed","stopped", "completed_with_errors", "failed"].includes(data.status)) {
+        if (TERMINAL_STATUSES.includes(
+            String(data.status || "").toLowerCase()
+        )) {
+            stopPolling();
+            console.log("Polling stopped. Final status:", data.status);
+        } else {
             startPolling();
         }
+
     } catch (error) {
+        console.error("Failed to refresh job status:", error);
         setMessage("jobMessage", error.message, "error");
     } finally {
         refreshBtn.disabled = !currentJobId;
@@ -540,6 +633,7 @@ clearBtn.addEventListener("click", clearInput);
 refreshBtn.addEventListener("click", refreshJobStatus);
 downloadBtn.addEventListener("click", downloadActiveImeis);
 copyJobBtn.addEventListener("click", copyJobId);
+restartBtn.addEventListener("click", restartApplication);
 
 dropZone.addEventListener("dragover", event => {
     event.preventDefault();
