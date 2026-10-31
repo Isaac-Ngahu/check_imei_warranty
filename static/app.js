@@ -293,27 +293,21 @@ async function stopWarrantyJob() {
 
         await refreshJobStatus();
     } catch (error) {
-        stopRequested = false;
-
-        setMessage(
-    "jobMessage",
-    data.message || "Stop requested. Waiting for workers to finish...",
-    "info"
-    );
-
-    // Refresh while the job ID is still available.
-    await refreshJobStatus();
-
-    // Remove the saved ID after the stop request is accepted.
-    clearSavedJobId();
-    stopPolling();
+    stopRequested = false;
 
     setMessage(
         "jobMessage",
-        "Stop requested successfully. The job ID has been cleared.",
-        "success"
+        error.message || "Unable to stop the job.",
+        "error"
     );
-    }
+
+    stopBtn.disabled = false;
+    stopBtn.classList.remove("is-stopping");
+    stopBtn.innerHTML =
+        '<span class="stop-icon" aria-hidden="true"></span> Stop job';
+
+    await refreshJobStatus();
+}
 }
 
 stopBtn.addEventListener("click", stopWarrantyJob);
@@ -395,14 +389,14 @@ function renderJobStatus(job) {
     const status = String(job.status || "unknown").toLowerCase();
 
     const terminal = [
-        "completed",
-        "completed_with_errors",
-        "stopped",
-        "failed"
+    "completed",
+    "completed_with_errors",
+    "stopped",
+    "failed",
+    "interrupted"
     ].includes(status);
 
-    const isStopping = stopRequested &&
-        ["queued", "running"].includes(status);
+    const isStopping = status === "stopping";
 
     document.getElementById("jobStatus").textContent =
         isStopping ? "Stopping..." : status.replaceAll("_", " ");
