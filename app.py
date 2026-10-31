@@ -41,7 +41,7 @@ RESULTS_CSV = BASE_DIR / "search_results.csv"
 
 KENYA_TZ = ZoneInfo("Africa/Nairobi")
 
-WAIT_TIMEOUT = 20
+WAIT_TIMEOUT = 10
 MIN_RESULT_WAIT = 2
 MAX_RETRIES = 3
 
@@ -61,7 +61,7 @@ app = Flask(__name__)
 
 
 MAX_RETRIES = 3
-MAX_WORKERS = 1
+MAX_WORKERS = 5
 
 # Only allow one submitted batch to run at a time.
 job_semaphore = threading.Semaphore(1)
