@@ -11,6 +11,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
+from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 import hmac
@@ -39,8 +41,8 @@ RESULTS_CSV = BASE_DIR / "search_results.csv"
 
 KENYA_TZ = ZoneInfo("Africa/Nairobi")
 
-WAIT_TIMEOUT = 5
-MIN_RESULT_WAIT = 3
+WAIT_TIMEOUT = 20
+MIN_RESULT_WAIT = 2
 MAX_RETRIES = 3
 
 # Set to True if you want Chrome to run in the background.
@@ -59,7 +61,7 @@ app = Flask(__name__)
 
 
 MAX_RETRIES = 3
-MAX_WORKERS = 5
+MAX_WORKERS = 1
 
 # Only allow one submitted batch to run at a time.
 job_semaphore = threading.Semaphore(1)
@@ -71,13 +73,145 @@ jobs = {}
 jobs_lock = threading.Lock()
 csv_lock = threading.Lock()
 job_stop_events = {}
-job_drivers = {}
+# job_drivers = {}
 BATCHES_DIR = BASE_DIR / "batches"
 BATCHES_DIR.mkdir(parents=True, exist_ok=True)
 
 latest_job_id = None
 
 #----------------------------------------restart helper--------------------------------------#
+
+# def capture_browser_diagnostics(driver, imei, attempt):
+
+#     diagnostic_dir = BASE_DIR / "diagnostics"
+
+#     diagnostic_dir.mkdir(
+#         parents=True,
+#         exist_ok=True
+#     )
+
+#     timestamp = datetime.now(
+#         KENYA_TZ
+#     ).strftime("%Y%m%d_%H%M%S")
+
+#     prefix = diagnostic_dir / (
+#         f"{imei}_{timestamp}_attempt_{attempt}"
+#     )
+
+#     try:
+
+#         driver.save_screenshot(
+#             str(prefix) + ".png"
+#         )
+
+#         Path(
+#             str(prefix) + ".html"
+#         ).write_text(
+#             driver.page_source,
+#             encoding="utf-8"
+#         )
+
+#         print(
+#             f"[DIAGNOSTICS SAVED] {prefix}"
+#         )
+
+#         print(
+#             "[CURRENT URL]",
+#             driver.current_url
+#         )
+
+#         print(
+#             "[PAGE TITLE]",
+#             driver.title
+#         )
+
+#         print(
+#             "[PAGE TEXT]",
+#             driver.find_element(
+#                 By.TAG_NAME,
+#                 "body"
+#             ).text[:3000]
+#         )
+
+#     except Exception as exc:
+
+#         print(
+#             f"[DIAGNOSTICS ERROR] {exc}"
+#         )
+
+def capture_browser_diagnostics(
+    driver,
+    imei,
+    attempt,
+    reason="Unknown"
+):
+    diagnostic_dir = BASE_DIR / "diagnostics"
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(
+        KENYA_TZ
+    ).strftime("%Y%m%d_%H%M%S")
+
+    prefix = diagnostic_dir / (
+        f"{imei}_{timestamp}_{attempt}"
+    )
+
+    try:
+        driver.save_screenshot(
+            str(prefix) + ".png"
+        )
+
+        Path(
+            str(prefix) + ".html"
+        ).write_text(
+            driver.page_source,
+            encoding="utf-8"
+        )
+
+        print(
+            f"[DIAGNOSTICS SAVED] IMEI={imei}, "
+            f"Reason={reason}, Path={prefix}"
+        )
+
+        print("[CURRENT URL]", driver.current_url)
+        print("[PAGE TITLE]", driver.title)
+
+        print(
+            "[PAGE TEXT]",
+            driver.find_element(
+                By.TAG_NAME, "body"
+            ).text[:3000]
+        )
+
+    except Exception as exc:
+        print(
+            f"[DIAGNOSTICS ERROR] "
+            f"IMEI={imei}: {exc}"
+        )
+
+def close_browser(driver, worker_id=None):
+    """Safely close a browser session owned by this worker."""
+
+    if driver is None:
+        return
+
+    try:
+        driver.quit()
+
+        print(
+            f"[BROWSER CLOSED] Worker={worker_id}"
+        )
+
+    except WebDriverException as exc:
+        print(
+            f"[BROWSER CLOSE WARNING] Worker={worker_id}: {exc}"
+        )
+
+    except Exception as exc:
+        print(
+            f"[BROWSER CLOSE ERROR] Worker={worker_id}: {exc}"
+        )
+
 def restart_railway_deployment():
     """Request a restart of this service's latest successful deployment."""
 
@@ -457,97 +591,378 @@ def save_result_safely(imei, status, job_id):
 #                 pass
 
 
+# def process_chunk(job_id, imeis):
+#     """Process a chunk and recreate Chrome if its session fails."""
+
+#     driver = None
+#     errors = 0
+#     active = 0
+
+#     try:
+#         stop_event = job_stop_events[job_id]
+#         for imei in imeis:
+#             if stop_event.is_set():
+#                 print(
+#                     f"[JOB {job_id}] Stop requested. "
+#                     "Worker will not process more IMEIs."
+#                 )
+#                 break
+#             status = "Error"
+
+#             print(
+#                 f"[JOB {job_id}] Processing IMEI {imei}"
+#             )
+
+#             # Initial attempt plus one attempt with a replacement browser.
+#             for browser_attempt in range(1, 3):
+#                 try:
+#                     if driver is None:
+#                         print(
+#                             f"[BROWSER START] Worker creating browser "
+#                             f"for IMEI {imei}"
+#                         )
+#                         driver = create_browser()
+                    
+#                     with jobs_lock:
+#                         job_drivers.setdefault(job_id, []).append(driver)
+
+
+#                     status = check_imei(driver, imei)
+#                     break
+
+#                 except WebDriverException as exc:
+#                     print(
+#                         f"[BROWSER RESTART] IMEI {imei}, "
+#                         f"attempt {browser_attempt}/2: {exc}"
+#                     )
+
+#                     if driver is not None:
+#                         try:
+#                             driver.quit()
+#                         except WebDriverException:
+#                             pass
+
+#                         driver = None
+
+#                     if browser_attempt < 2:
+#                         time.sleep(3)
+
+#                 except Exception as exc:
+#                     print(f"[WORKER ERROR] IMEI {imei}: {exc}")
+#                     traceback.print_exc()
+#                     status = "Error"
+#                     break
+
+#             if status in ("Unknown", "Error"):
+#                 errors += 1
+
+#             if status == "Under warranty":
+#                 active += 1
+
+#             try:
+#                 save_result_safely(imei, status, job_id)
+#             except Exception as exc:
+#                 print(f"[CSV ERROR] IMEI {imei}: {exc}")
+
+#             with jobs_lock:
+#                 job = jobs[job_id]
+#                 job["completed"] += 1
+#                 job["under_warranty"] += int(status == "Under warranty")
+#                 job["errors"] += int(status in ("Unknown", "Error"))
+#                 update_job_progress(
+#                     job_id,
+#                     job["completed"],
+#                     job["under_warranty"],
+#                     job["errors"]
+#                 )
+
+#             # Be gentle with the website between IMEIs.
+#             if not stop_event.is_set():
+#                 time.sleep(2)
+
+#     except Exception as exc:
+#         print(f"[WORKER FAILED] Job {job_id}: {exc}")
+#         traceback.print_exc()
+
+#         with jobs_lock:
+#             jobs[job_id]["worker_failures"] += 1
+#             jobs[job_id]["messages"].append(str(exc))
+
+#     finally:
+#         if driver is not None:
+#             try:
+#                 driver.quit()
+#             except WebDriverException:
+#                 pass
+
+
+
 def process_chunk(job_id, imeis):
-    """Process a chunk and recreate Chrome if its session fails."""
+    """
+    Process a worker's IMEI chunk in two passes.
+
+    Pass 1: Normal processing.
+    Pass 2: Retry temporary failures.
+    """
 
     driver = None
-    errors = 0
-    active = 0
+    retry_queue = []
 
-    try:
-        stop_event = job_stop_events[job_id]
-        for imei in imeis:
+    stop_event = job_stop_events[job_id]
+
+    def close_current_browser():
+        nonlocal driver
+
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+            driver = None
+
+    def check_with_browser_recovery(imei):
+        """
+        Check an IMEI and recreate Chrome if its session fails.
+        Returns a status or raises RateLimitedError.
+        """
+
+        nonlocal driver
+
+        for browser_attempt in range(1, 3):
             if stop_event.is_set():
-                print(
-                    f"[JOB {job_id}] Stop requested. "
-                    "Worker will not process more IMEIs."
-                )
-                break
-            status = "Error"
-
-            print(
-                f"[JOB {job_id}] Processing IMEI {imei}"
-            )
-
-            # Initial attempt plus one attempt with a replacement browser.
-            for browser_attempt in range(1, 3):
-                try:
-                    if driver is None:
-                        print(
-                            f"[BROWSER START] Worker creating browser "
-                            f"for IMEI {imei}"
-                        )
-                        driver = create_browser()
-                    
-                    with jobs_lock:
-                        job_drivers.setdefault(job_id, []).append(driver)
-
-
-                    status = check_imei(driver, imei)
-                    break
-
-                except WebDriverException as exc:
-                    print(
-                        f"[BROWSER RESTART] IMEI {imei}, "
-                        f"attempt {browser_attempt}/2: {exc}"
-                    )
-
-                    if driver is not None:
-                        try:
-                            driver.quit()
-                        except WebDriverException:
-                            pass
-
-                        driver = None
-
-                    if browser_attempt < 2:
-                        time.sleep(3)
-
-                except Exception as exc:
-                    print(f"[WORKER ERROR] IMEI {imei}: {exc}")
-                    traceback.print_exc()
-                    status = "Error"
-                    break
-
-            if status in ("Unknown", "Error"):
-                errors += 1
-
-            if status == "Under warranty":
-                active += 1
+                return "Stopped"
 
             try:
-                save_result_safely(imei, status, job_id)
-            except Exception as exc:
-                print(f"[CSV ERROR] IMEI {imei}: {exc}")
+                if driver is None:
+                    print(
+                        f"[BROWSER START] Creating browser "
+                        f"for IMEI {imei}"
+                    )
+                    driver = create_browser()
 
-            with jobs_lock:
-                job = jobs[job_id]
-                job["completed"] += 1
-                job["under_warranty"] += int(status == "Under warranty")
-                job["errors"] += int(status in ("Unknown", "Error"))
-                update_job_progress(
-                    job_id,
-                    job["completed"],
-                    job["under_warranty"],
-                    job["errors"]
+                status = check_imei(driver, imei)
+                return status
+
+            except RateLimitedError:
+                raise
+
+            except WebDriverException as exc:
+                print(
+                    f"[BROWSER RESTART] IMEI={imei}, "
+                    f"attempt={browser_attempt}/2: {exc}"
                 )
 
-            # Be gentle with the website between IMEIs.
+                close_current_browser()
+
+                if browser_attempt < 2:
+                    if stop_event.wait(5):
+                        return "Stopped"
+
+            except Exception:
+                raise
+
+        return "Error"
+
+    def save_final_result(imei, status):
+        """Save the final result and update job counters once."""
+
+        if status == "Stopped":
+            return
+
+        try:
+            save_result_safely(imei, status, job_id)
+        except Exception as exc:
+            print(f"[CSV ERROR] IMEI={imei}: {exc}")
+            traceback.print_exc()
+
+        is_error = status in (
+            "Unknown",
+            "Error",
+            "Rate Limited"
+        )
+
+        with jobs_lock:
+            job = jobs[job_id]
+
+            job["completed"] += 1
+            job["under_warranty"] += int(
+                status == "Under warranty"
+            )
+            job["errors"] += int(is_error)
+
+            update_job_progress(
+                job_id,
+                job["completed"],
+                job["under_warranty"],
+                job["errors"]
+            )
+
+        print(
+            f"[FINAL RESULT] IMEI={imei}, "
+            f"Status={status}"
+        )
+
+    try:
+        # ---------------------------------
+        # PASS 1: NORMAL IMEI PROCESSING
+        # ---------------------------------
+
+        print(
+            f"[WORKER] Starting first pass. "
+            f"IMEIs={len(imeis)}"
+        )
+
+        for imei in imeis:
+
+            if stop_event.is_set():
+                print("[WORKER] Stop requested.")
+                break
+
+            print(f"[WORKER] Processing IMEI {imei}")
+
+            try:
+                status = check_with_browser_recovery(imei)
+
+            except RateLimitedError as exc:
+                print(
+                    f"[RETRY QUEUE] IMEI={imei}, "
+                    f"Reason=Rate limited: {exc}"
+                )
+
+                retry_queue.append({
+                    "imei": imei,
+                    "reason": "rate_limited"
+                })
+
+                print(
+                    f"[RETRY QUEUED] "
+                    f"IMEI={imei}, "
+                    f"Reason=rate_limited, "
+                    f"Queue size={len(retry_queue)}"
+                )
+                continue
+
+            except Exception as exc:
+                print(
+                    f"[RETRY QUEUE] IMEI={imei}, "
+                    f"Reason=Error: {exc}"
+                )
+
+                retry_queue.append({
+                    "imei": imei,
+                    "reason": "error"
+                })
+                continue
+
+            if status in ("Unknown", "Error"):
+                print(
+                    f"[RETRY QUEUE] IMEI={imei}, "
+                    f"Status={status}"
+                )
+
+                retry_queue.append({
+                    "imei": imei,
+                    "reason": status.lower()
+                })
+                continue
+
+            if status == "Stopped":
+                break
+
+            # A successful or otherwise recognized result.
+            save_final_result(imei, status)
+
             if not stop_event.is_set():
-                time.sleep(2)
+                stop_event.wait(2)
+
+        # ---------------------------------
+        # PASS 2: RETRY TEMPORARY FAILURES
+        # ---------------------------------
+
+        print(
+            f"[RETRY PASS STARTED] "
+            f"Total IMEIs to retry={len(retry_queue)}"
+        )
+
+        for index, item in enumerate(retry_queue, start=1):
+
+            if stop_event.is_set():
+                print("[RETRY PASS] Stop requested.")
+                break
+
+            imei = item["imei"]
+            reason = item["reason"]
+
+            delay = 60 if reason == "rate_limited" else 10
+
+            print(
+                f"[RETRY PROCESSING] "
+                f"{index}/{len(retry_queue)} "
+                f"IMEI={imei}, "
+                f"Reason={reason}, "
+                f"Delay={delay}s"
+            )
+
+            if stop_event.wait(delay):
+                break
+
+            final_status = "Error"
+
+            try:
+                final_status = check_with_browser_recovery(
+                    imei
+                )
+
+            except RateLimitedError as exc:
+                print(
+                    f"[RETRY FAILED - RATE LIMITED] "
+                    f"IMEI={imei}: {exc}"
+                )
+                final_status = "Rate Limited"
+
+            except Exception as exc:
+                print(
+                    f"[RETRY FAILED] IMEI={imei}: {exc}"
+                )
+                traceback.print_exc()
+                final_status = "Error"
+
+            if final_status == "Stopped":
+                    break
+
+                # Capture diagnostics ONLY if the IMEI remains unsuccessful
+                # after the separate retry pass.
+            if final_status in (
+                "Unknown",
+                "Error",
+                "Rate Limited"
+            ):
+                print(
+                    f"[FINAL FAILURE] IMEI={imei}, "
+                    f"Status={final_status}. Saving diagnostics."
+                )
+
+                if driver is not None:
+                    capture_browser_diagnostics(
+                        driver,
+                        imei,
+                        "final_retry",
+                        reason=final_status
+                    )
+            # If it is still Unknown, retain Unknown as the
+            # final status rather than guessing a warranty result.
+            save_final_result(imei, final_status)
+
+        print(
+            f"[WORKER FINISHED] Job={job_id}, "
+            f"Retry items={len(retry_queue)}"
+        )
 
     except Exception as exc:
-        print(f"[WORKER FAILED] Job {job_id}: {exc}")
+        print(
+            f"[WORKER FAILED] Job={job_id}: {exc}"
+        )
         traceback.print_exc()
 
         with jobs_lock:
@@ -555,11 +970,8 @@ def process_chunk(job_id, imeis):
             jobs[job_id]["messages"].append(str(exc))
 
     finally:
-        if driver is not None:
-            try:
-                driver.quit()
-            except WebDriverException:
-                pass
+        close_current_browser()
+
 
 
 
@@ -791,18 +1203,87 @@ def start_warranty_check():
         "status_url": f"/api/warranty-check/{job_id}",
     }), 202
 
-@app.route("/api/warranty-check/<job_id>/stop", methods=["POST"])
+# @app.route("/api/warranty-check/<job_id>/stop", methods=["POST"])
+# def stop_warranty_job(job_id):
+#     with jobs_lock:
+#         conn = get_db()
+#         row = conn.execute(
+#             "SELECT status FROM jobs WHERE id = ?",
+#             (job_id,)
+#         ).fetchone()
+#         conn.close()
+
+#         if row is None:
+#             return jsonify({"error": "Job not found."}), 404
+
+#         if row["status"] not in ("queued", "running"):
+#             return jsonify({
+#                 "message": "Job is no longer running.",
+#                 "status": row["status"]
+#             }), 409
+
+#         # SQLite may contain jobs from a previous Flask process.
+#         job = jobs.get(job_id)
+#         stop_event = job_stop_events.get(job_id)
+
+#         if job is None or stop_event is None:
+#             return jsonify({
+#                 "error": (
+#                     "This job is in the database but is not registered "
+#                     "in the current Flask process. It may have been "
+#                     "interrupted by an application restart."
+#                 ),
+#                 "job_id": job_id,
+#                 "database_status": row["status"]
+#             }), 409
+
+#         stop_event.set()
+
+#         for driver in job_drivers.get(job_id, []):
+#             try:
+#                 driver.quit()
+#             except Exception:
+#                 pass
+
+#         job_drivers.pop(job_id, None)
+
+#         update_job_status(job_id, "stopped")
+
+        
+#         return jsonify({
+#             "message": (
+#                 "Stop requested. Workers will finish their current "
+#                 "IMEI checks before stopping."
+#             ),
+#             "job_id": job_id,
+#             "status": "stopping"
+#         }), 202
+
+@app.route(
+    "/api/warranty-check/<job_id>/stop",
+    methods=["POST"]
+)
 def stop_warranty_job(job_id):
+
     with jobs_lock:
+
         conn = get_db()
+
         row = conn.execute(
-            "SELECT status FROM jobs WHERE id = ?",
+            """
+            SELECT status
+            FROM jobs
+            WHERE id = ?
+            """,
             (job_id,)
         ).fetchone()
+
         conn.close()
 
         if row is None:
-            return jsonify({"error": "Job not found."}), 404
+            return jsonify({
+                "error": "Job not found."
+            }), 404
 
         if row["status"] not in ("queued", "running"):
             return jsonify({
@@ -810,42 +1291,30 @@ def stop_warranty_job(job_id):
                 "status": row["status"]
             }), 409
 
-        # SQLite may contain jobs from a previous Flask process.
-        job = jobs.get(job_id)
         stop_event = job_stop_events.get(job_id)
 
-        if job is None or stop_event is None:
+        if stop_event is None:
             return jsonify({
-                "error": (
-                    "This job is in the database but is not registered "
-                    "in the current Flask process. It may have been "
-                    "interrupted by an application restart."
-                ),
-                "job_id": job_id,
-                "database_status": row["status"]
+                "error": "Job is not registered in this process."
             }), 409
 
+        # Request graceful shutdown.
         stop_event.set()
 
-        for driver in job_drivers.get(job_id, []):
-            try:
-                driver.quit()
-            except Exception:
-                pass
+        # Do not terminate browser sessions here.
+        update_job_status(job_id, "stopping")
 
-        job_drivers.pop(job_id, None)
+        if job_id in jobs:
+            jobs[job_id]["status"] = "stopping"
 
-        update_job_status(job_id, "stopped")
-
-        
-        return jsonify({
-            "message": (
-                "Stop requested. Workers will finish their current "
-                "IMEI checks before stopping."
-            ),
-            "job_id": job_id,
-            "status": "stopping"
-        }), 202
+    return jsonify({
+        "message": (
+            "Stop requested. Workers will finish their "
+            "current IMEI checks and close their browsers."
+        ),
+        "job_id": job_id,
+        "status": "stopping"
+    }), 202
 
 # @app.route("/api/warranty-check/<job_id>/stop", methods=["POST"])
 # def stop_warranty_job(job_id):
@@ -1327,21 +1796,56 @@ def create_browser():
 # 
 
 
+
 def check_imei(driver, imei):
-    """Check an IMEI with retries and more robust result detection."""
+    """Check an IMEI, retry timeouts and capture evidence for unknown results."""
 
     def extract_status(browser):
         try:
             body_text = browser.find_element(
                 By.TAG_NAME, "body"
-            ).text
+            ).text.strip()
 
-            if "Device activation is in progress" in body_text:
+            if not body_text:
+                return None
+
+            body_lower = body_text.lower()
+
+            network_errors = [
+                "err_network_changed",
+                "err_internet_disconnected",
+                "err_connection_reset",
+                "err_connection_timed_out",
+                "err_name_not_resolved",
+            ]
+
+            for error in network_errors:
+                if error in body_lower:
+                    print(
+                        f"[NETWORK FAILURE] IMEI={imei}, "
+                        f"Browser error={error}"
+                    )
+
+                    raise WebDriverException(
+                        f"Chrome network error: {error}"
+                    )
+
+            # Recognize activation messages.
+            if "device activation is in progress" in body_lower:
                 return "Device activation is in progress"
 
+            # Find the warranty heading without case sensitivity.
             headings = browser.find_elements(
                 By.XPATH,
-                "//*[normalize-space()='Warranty status']"
+                """
+                //*[
+                    translate(
+                        normalize-space(.),
+                        'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                        'abcdefghijklmnopqrstuvwxyz'
+                    ) = 'warranty status'
+                ]
+                """
             )
 
             for heading in headings:
@@ -1354,7 +1858,7 @@ def check_imei(driver, imei):
                     if status:
                         return status
 
-                # Some page layouts place the status inside a parent.
+                # Check the heading's parent container.
                 parent_text = heading.find_element(
                     By.XPATH, ".."
                 ).text.strip()
@@ -1372,32 +1876,46 @@ def check_imei(driver, imei):
                     ):
                         return lines[index + 1]
 
-            # Handle known messages that may appear without the heading.
+            # Recognize known result messages.
             known_statuses = [
                 "Under warranty",
                 "Out of warranty",
                 "Warranty expired",
                 "Warranty is expired",
+                "Warranty status unavailable",
             ]
 
             for known_status in known_statuses:
-                if known_status.lower() in body_text.lower():
+                if known_status.lower() in body_lower:
                     return known_status
 
             return None
+        
+        except WebDriverException as exc:
 
-        except WebDriverException:
+            message = str(exc).lower()
+
+            network_errors = [
+                "err_network_changed",
+                "err_internet_disconnected",
+                "err_connection_reset",
+                "err_connection_timed_out",
+                "err_name_not_resolved",
+            ]
+
+            if any(error in message for error in network_errors):
+                raise
+
             return None
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            
-
             print(
                 f"[ATTEMPT {attempt}/{MAX_RETRIES}] "
                 f"Checking IMEI {imei}"
             )
 
+            # Clear previous browser network logs.
             try:
                 driver.get_log("performance")
             except WebDriverException:
@@ -1405,8 +1923,8 @@ def check_imei(driver, imei):
 
             driver.get(SEARCH_URL)
 
-            # Check the page response before submitting the IMEI.
             detect_rate_limit(driver)
+
             wait = WebDriverWait(driver, WAIT_TIMEOUT)
 
             imei_input = wait.until(
@@ -1418,6 +1936,19 @@ def check_imei(driver, imei):
             imei_input.clear()
             imei_input.send_keys(imei)
 
+            entered_imei = imei_input.get_attribute("value")
+
+            print(
+                f"[IMEI INPUT] Expected={imei}, "
+                f"Actual={entered_imei}"
+            )
+
+            if entered_imei != imei:
+                raise RuntimeError(
+                    f"IMEI input mismatch: expected {imei}, "
+                    f"got {entered_imei}"
+                )
+
             search_button = wait.until(
                 EC.element_to_be_clickable(
                     (By.CSS_SELECTOR, "div.exp_check_input_right")
@@ -1426,54 +1957,105 @@ def check_imei(driver, imei):
 
             search_button.click()
 
-            # Wait for a recognizable result instead of sleeping
-            # for a fixed number of seconds.
+            print("[SEARCH CLICKED]")
+            print("[URL AFTER CLICK]", driver.current_url)
+
+            print(
+                "[PAGE TEXT AFTER CLICK]",
+                driver.find_element(
+                    By.TAG_NAME, "body"
+                ).text[:1500]
+            )
+
+            # Wait for a recognizable result.
+            try:
+                WebDriverWait(
+                    driver,
+                    WAIT_TIMEOUT,
+                    poll_frequency=0.5
+                ).until(
+                    lambda browser: RESULT_URL in browser.current_url
+                )
+
+                print(
+                    f"[RESULT PAGE REACHED] IMEI={imei}, "
+                    f"URL={driver.current_url}"
+                )
+            
+            except TimeoutException:
+                print(
+                    f"[RESULT PAGE NOT REACHED] IMEI={imei}, "
+                    f"URL={driver.current_url}"
+                )
+
+                print(
+                    "[PAGE TEXT]",
+                    driver.find_element(By.TAG_NAME, "body").text[:3000]
+                )
+
+                raise
+
             status = WebDriverWait(
-                driver, WAIT_TIMEOUT
+                driver,
+                WAIT_TIMEOUT,
+                poll_frequency=0.5
             ).until(extract_status)
 
-            print(f"[RESULT] IMEI {imei}: {status}")
+            print(f"[RESULT] IMEI={imei}, Status={status}")
             return status
-        
-        except InterruptedError:
-            return "Stopped"
 
         except TimeoutException:
-    # A timeout can mean a slow page or a dead browser.
             try:
                 driver.execute_script("return 1")
             except WebDriverException:
                 raise
 
             print(
-                f"[TIMEOUT] IMEI {imei}, "
-                f"attempt {attempt}/{MAX_RETRIES}: "
-                "No recognizable result appeared."
+                f"[TIMEOUT] IMEI={imei}, "
+                f"attempt={attempt}/{MAX_RETRIES}"
             )
 
-        except WebDriverException as exc:
-            print(
-                f"[BROWSER SESSION FAILED] IMEI {imei}: {exc}"
-            )
+            # Save evidence from the failed attempt.
+            try:
+                print("[TIMEOUT URL]", driver.current_url)
+                print(
+                    "[TIMEOUT PAGE TEXT]",
+                    driver.find_element(
+                        By.TAG_NAME, "body"
+                    ).text[:3000]
+                )
+            except WebDriverException:
+                pass
+
+            # if attempt == MAX_RETRIES:
+            #     capture_browser_diagnostics(
+            #         driver, imei, attempt
+            #     )
+
+        except RateLimitedError:
             raise
 
-        except RateLimitedError as exc:
-            print(
-                f"[RATE LIMIT ERROR] IMEI {imei}: {exc}"
-            )
+        except WebDriverException as exc:
+            print(f"[BROWSER SESSION FAILED] IMEI={imei}: {exc}")
             raise
 
         except Exception as exc:
             print(
-                f"[UNEXPECTED ERROR] IMEI {imei}, "
-                f"attempt {attempt}/{MAX_RETRIES}: {exc}"
+                f"[UNEXPECTED ERROR] IMEI={imei}, "
+                f"attempt={attempt}: {exc}"
             )
             traceback.print_exc()
+
+            # if attempt == MAX_RETRIES:
+            #     capture_browser_diagnostics(
+            #         driver, imei, attempt
+            #     )
 
         if attempt < MAX_RETRIES:
             time.sleep(2)
 
     return "Unknown"
+
 
 
 # ---------------- WARRANTY CHECK ----------------
