@@ -322,8 +322,8 @@ def get_db():
 def init_db():
     conn = get_db()
     conn.execute("""
-    CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS jobs_v2
+     TEXT PRIMARY KEY,
     status TEXT NOT NULL,
     total INTEGER NOT NULL,
     completed INTEGER DEFAULT 0,
@@ -341,8 +341,8 @@ def create_job_record(job_id, total):
     conn = get_db()
 
     conn.execute("""
-        INSERT INTO jobs (
-            id,
+        INSERT INTO jobs_v2
+              id,
             status,
             total
         )
@@ -366,15 +366,15 @@ def update_job_status(job_id, status):
         "stopping"
     ):
         conn.execute("""
-            UPDATE jobs
-            SET status = ?,
+            UPDATE jobs_v2
+                SET status = ?,
                 completed_at = CURRENT_TIMESTAMP
             WHERE id = ?
         """, (status, job_id))
     else:
         conn.execute("""
-            UPDATE jobs
-            SET status = ?
+            UPDATE jobs_v2
+                SET status = ?
             WHERE id = ?
         """, (status, job_id))
 
@@ -393,7 +393,7 @@ def update_job_progress(
     conn = get_db()
 
     conn.execute("""
-        UPDATE jobs
+        UPDATE jobs_v2
         SET completed = ?,
             under_warranty = ?,
             errors = ?
@@ -413,7 +413,7 @@ def find_active_job():
 
     row = conn.execute("""
         SELECT id
-        FROM jobs
+        FROM jobs_v2
         WHERE status IN ('queued', 'running')
         LIMIT 1
     """).fetchone()
@@ -570,7 +570,7 @@ def save_result_safely(imei, status, job_id):
 #             finally:
 #                 completed += 1
 
-#                 with jobs_lock:
+#                 with jobs_v2
 #                     job = jobs[job_id]
 #                     job["completed"] += 1
 #                     job["under_warranty"] += int(status == "Under warranty")
